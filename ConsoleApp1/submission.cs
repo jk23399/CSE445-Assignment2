@@ -33,35 +33,38 @@ namespace ConsoleApp1
             // Initialize the shared multi-cell buffer
             buffer = new MultiCellBuffer();
 
-            // Create company and investment agent objects
+            // Create company
             Company company = new Company();
-            InvestmentAgent investmentAgent = new InvestmentAgent();
 
             // Create and start the company thread
             Thread companyThread = new Thread(new ThreadStart(company.StockFun));
             companyThread.Start();
 
-            // Subscribe investment agent to company's price cut event
-            Company.PriceCut += new PriceCutEvent(investmentAgent.agentOrder);
-            Console.WriteLine("Price cut event has been subscribed");
-
-            // Subscribe company to investment agent's order creation event
+            // Subscribe company to investment agent's static order creation event
             InvestmentAgent.orderCreation += new OrderCreationEvent(company.takeOrder);
             Console.WriteLine("Order creation event has been subscribed");
 
-            // Subscribe investment agent to order processing confirmation event
-            OrderProcessing.OrderProcess += new OrderProcessEvent(investmentAgent.orderProcessConfirm);
-            Console.WriteLine("Order process event has been subscribed");
-
-            // Create and start 5 investment agent threads
+            // Create and start 5 separate investment agent objects/threads
             investmentAgentThreads = new Thread[5];
             for (int i = 0; i < 5; i++)
             {
-                Console.WriteLine("Creating  investment agent thread {0}", (i + 1));
-                investmentAgentThreads[i] = new Thread(investmentAgent.agentFun);
-                investmentAgentThreads[i].Name = (i + 1).ToString();
+                string agentId = (i + 1).ToString();
+
+                // 1. Create individual instances for each agent thread
+                InvestmentAgent agent = new InvestmentAgent(agentId);
+
+                // Subscribe this specific agent instance to the events
+                Company.PriceCut += new PriceCutEvent(agent.agentOrder);
+                OrderProcessing.OrderProcess += new OrderProcessEvent(agent.orderProcessConfirm);
+
+                Console.WriteLine("Creating investment agent thread {0}", agentId);
+                investmentAgentThreads[i] = new Thread(agent.agentFun);
+                investmentAgentThreads[i].Name = agentId;
                 investmentAgentThreads[i].Start();
             }
+
+            Console.WriteLine("Price cut event has been subscribed");
+            Console.WriteLine("Order process event has been subscribed");
         }
     }
 
@@ -244,11 +247,19 @@ namespace ConsoleApp1
         private static readonly object randLock = new object();
         private static readonly Random rng = new Random();
 
+        // Unique identifier for the agent instance
+        private string myId;
+
+        // Constructor to assign unique ID to each agent instance
+        public InvestmentAgent(string id)
+        {
+            this.myId = id;
+        }
+
         // Main loop: each agent thread detects price change and creates its own order
         public void agentFun()
         {
-            Console.WriteLine("Starting investment agent now");
-            string myId = Thread.CurrentThread.Name;
+            Console.WriteLine("Starting investment agent {0} now", myId);
             double lastSeenPrice = 0;
 
             while (MainClass.companyThreadRunning)
@@ -258,11 +269,30 @@ namespace ConsoleApp1
                 {
                     currentPrice = latestPrice;
                 }
-                // If price has changed, create a new order
+
+                // If price has changed, evaluate order creation
                 if (currentPrice != lastSeenPrice && currentPrice != 0)
                 {
+                    double diff = lastSeenPrice - currentPrice;
+                    bool isFirstRun = (lastSeenPrice == 0);
                     lastSeenPrice = currentPrice;
-                    createOrder(myId);
+
+                    // 2. Calculate quantity based on the difference between previous and current price
+                    if (diff > 0 || isFirstRun)
+                    {
+                        int qty = 10; // Default base quantity
+
+                        if (diff > 0)
+                        {
+                            // Example logic: Buy more if the price drop is larger
+                            qty = (int)(diff * 2);
+                        }
+
+                        // Ensure quantity is valid
+                        if (qty <= 0) qty = 1;
+
+                        createOrder(myId, qty);
+                    }
                 }
                 Thread.Sleep(100);
             }
@@ -271,22 +301,27 @@ namespace ConsoleApp1
         // Callback: called when order processing is confirmed, prints the charge
         public void orderProcessConfirm(Order order, double orderAmount)
         {
-            Console.WriteLine("Investment Agent {0}'s order is confirmed. The amount to be charged is ${1}",
-                order.getSenderId(), orderAmount);
+            // Verify if the processed order belongs to this specific agent instance
+            if (order.getSenderId() == myId)
+            {
+                Console.WriteLine("Investment Agent {0}'s order is confirmed. The amount to be charged is ${1}",
+                    order.getSenderId(), orderAmount);
+            }
         }
 
         // Creates an order and writes it to the shared buffer
-        private void createOrder(string senderId)
+        private void createOrder(string senderId, int qty)
         {
-            Console.WriteLine("Inside create order");
+            Console.WriteLine("Inside create order for agent {0}", senderId);
             long cardNo;
-            int qty;
+
             lock (randLock)
             {
                 cardNo = rng.Next(5000, 7001);
-                qty = rng.Next(1, 20);
             }
+
             Order order = new Order(senderId, cardNo, latestPrice, qty);
+
             // Fire order creation event to notify the company
             orderCreation?.Invoke();
             MainClass.buffer.SetOneCell(order);
